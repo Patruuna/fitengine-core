@@ -1,0 +1,341 @@
+// server.js (FitEngine Core)
+// Run: node server.js
+// Endpoints: GET /health, POST /recommend
+
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+const cors = require("cors");
+const { parse } = require("csv-parse/sync");
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+
+// -------------------- CSV load --------------------
+function readCsv(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  // mallit.csv tulee usein ; eroteltuna (Excel FI). csv-parse osaa päätellä delimiterin huonosti,
+  // joten asetetaan ; ja fallback , jos tarvitaan.
+  try {
+    return parse(raw, { columns: true, skip_empty_lines: true, delimiter: ";" });
+  } catch (e) {
+    return parse(raw, { columns: true, skip_empty_lines: true, delimiter: "," });
+  }
+}
+
+const DATA_DIR = path.join(__dirname, "data");
+const MALLIT_PATH = path.join(DATA_DIR, "mallit.csv");
+const KOKEMUS_PATH = path.join(DATA_DIR, "kokemus.csv");
+
+let mallit = [];
+let kokemus = [];
+
+function loadData() {
+  mallit = readCsv(MALLIT_PATH);
+  kokemus = readCsv(KOKEMUS_PATH);
+}
+loadData();
+
+// Optional: hot reload by calling POST /reload (local dev)
+app.post("/reload", (req, res) => {
+  loadData();
+  res.json({ status: "OK", loaded: { mallit: mallit.length, kokemus: kokemus.length } });
+});
+
+// -------------------- Helpers --------------------
+function n(x) {
+  if (x === undefined || x === null) return "";
+  return String(x).trim();
+}
+
+function asNum(x, fallback = 0) {
+  const v = Number(String(x).replace(",", "."));
+  return Number.isFinite(v) ? v : fallback;
+}
+
+// Kokemus: CSV oletus sarakkeet: SKU, ProfiiliTagi, Kokemuskerroin (0-2), Huomio
+function experienceScoreForSku(sku, profileTags = []) {
+  const s = n(sku);
+  const rows = kokemus.filter(r => n(r["SKU"]) === s);
+  if (!rows.length) return { score: 0, notes: [] };
+
+  let best = 0;
+  const notes = [];
+
+  for (const r of rows) {
+    const tag = n(r["ProfiiliTagi"]);
+    const k = asNum(r["Kokemuskerroin (0-2)"], 0);
+    const note = n(r["Huomio"]);
+
+    // Jos kokemusrivi liittyy profiiliin (tag match), annetaan paino
+    // Jos tag on tyhjä, se on geneerinen kokemus.
+    const tagMatch = !tag || profileTags.includes(tag);
+    if (tagMatch) {
+      best = Math.max(best, k);
+      if (note) notes.push(note);
+    }
+  }
+  return { score: best, notes };
+}
+
+// Profiilitagit asiakkaasta (hyödyttää kokemus.csv matchia)
+function buildProfileTags(input) {
+  const tags = [];
+  const suk = n(input.sukupuoli).toUpperCase();
+  if (suk === "MIES") tags.push("SUKUPUOLI_MIES");
+  if (suk === "NAINEN") tags.push("SUKUPUOLI_NAINEN");
+
+  const jm = n(input.jalanMalli).toUpperCase();
+  if (jm === "KAPEA") tags.push("JALKA_KAPEA");
+  if (jm === "NORMAALI") tags.push("JALKA_NORMAALI");
+  if (jm === "LEVEÄ" || jm === "LEVEA") tags.push("JALKA_LEVEA");
+  if (jm === "TURVONNUT") tags.push("JALKA_PAKSU"); // teidän tagi-logiikka
+
+  const nil = n(input.nilkka).toUpperCase();
+  if (nil === "SUORA") tags.push("NILKKA_SUORA");
+  if (nil === "PRONAATIO") tags.push("NILKKA_PRONAATIO");
+  if (nil === "SUPINAATIO") tags.push("NILKKA_SUPINAATIO");
+
+  const kay = n(input.kaytto).toUpperCase();
+  if (kay === "ULKOILU") tags.push("KAYTTO_ULKOILU");
+  if (kay === "PÄIVITTÄINEN" || kay === "PAIVITTAINEN") tags.push("KAYTTO_PAIVITTAINEN");
+  if (kay === "SISÄKÄYTTÖ" || kay === "SISAKAYTTO") tags.push("KAYTTO_SISAKAYTTO");
+  if (kay === "KEVYT/SIRO") tags.push("KAYTTO_KEVYT_SIRO");
+
+  // Huomioitavaa-lista (esim ["Vasaravarpaat","Jalkaterän kipu"])
+  const h = Array.isArray(input.huomioitavaa) ? input.huomioitavaa : [];
+  for (const item of h) {
+    const it = n(item).toUpperCase();
+    if (it.includes("VASARA")) tags.push("VASARAVARPAAT");
+    if (it.includes("JALKATER") || it.includes("PÄKI") || it.includes("PAKI")) tags.push("JALKATERA_KIPU");
+    if (it.includes("TURVOT")) tags.push("TURPOAA");
+    if (it.includes("VAIV")) tags.push("VAIVAISENLUU_HIERTYMA");
+    if (it.includes("VARV")) tags.push("VARVASTILA_LEVEA");
+  }
+
+  return [...new Set(tags)];
+}
+
+// Jalan malli -> sallittu lesti (hard gate)
+function lestiAllowed(jalanMalli, lesti) {
+  const jm = n(jalanMalli).toLowerCase();
+  const le = n(lesti).toLowerCase();
+
+  if (!jm) return true;
+
+  if (jm === "kapea") return le === "kapea";
+  if (jm === "normaali") return le === "normaali";
+  if (jm === "leveä" || jm === "levez" || jm === "levea") return le === "leveä" || le === "levea";
+
+  // Turvonnut / paksu -> yleensä K-lesti
+  return le === "k-lesti";
+}
+
+// Kiinnitys: hard gate - jos asiakas vaatii
+function kiinnitysHardAllowed(wanted, model) {
+  const w = n(wanted);
+  const m = n(model);
+
+  if (!w || w === "Ei väliä") return true;
+
+  if (w === "Nauha") return m === "Nauha" || m === "Nauha ja vetoketju"; // hyväksyy zip-lace
+  if (w === "Tarra") return m === "Tarra";
+  if (w === "Nauha ja vetoketju") return m === "Nauha ja vetoketju";
+  if (w === "Ei mitään") return m === "Ei mitään";
+
+  return true;
+}
+
+// Kenkätyyppi: hard gate - jos asiakas vaatii
+function kenkaTyyppiHardAllowed(wanted, model) {
+  const w = n(wanted);
+  const m = n(model);
+
+  if (!w || w === "Ei väliä") return true;
+  // Tässä pidetään yksinkertaisena: vaatii samaa tyyppiä
+  return w === m;
+}
+
+// Soft bonus - käyttöluokka
+function kayttoMatchScore(wanted, model) {
+  const w = n(wanted);
+  const m = n(model);
+  if (!w || w === "Ei väliä") return 0;
+  if (w === m) return 2;
+
+  // Päivittäinen ja Kevyt/siro ovat lähekkäin, mutta ei sama
+  if ((w === "Päivittäinen" && m === "Kevyt/siro") || (w === "Kevyt/siro" && m === "Päivittäinen")) return 1;
+
+  // Työ/Sisäkäyttö lähellä sisäkäyttöä
+  if ((w === "Sisäkäyttö" && m === "Työ/Sisäkäyttö") || (w === "Työ/Sisäkäyttö" && m === "Sisäkäyttö")) return 1;
+
+  return 0;
+}
+
+// Soft bonus - kiinnitys
+function kiinnitysMatchScore(wanted, model) {
+  const w = n(wanted);
+  const m = n(model);
+  if (!w || w === "Ei väliä") return 0;
+  if (w === m) return 2;
+
+  // "Nauha" hyväksyy myös "Nauha ja vetoketju" (toive-tasolla)
+  if (w === "Nauha" && m === "Nauha ja vetoketju") return 1;
+
+  return 0;
+}
+
+// Soft bonus - kenkätyyppi
+function kenkaTyyppiMatchScore(wanted, model) {
+  const w = n(wanted);
+  const m = n(model);
+  if (!w || w === "Ei väliä") return 0;
+  if (w === m) return 2;
+  return 0;
+}
+
+function isPronation(input) {
+  return n(input.nilkka) === "Pronaatio";
+}
+
+// -------------------- Health --------------------
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    message: "FitEngine Core is running",
+    loaded: { mallit: mallit.length, kokemus: kokemus.length }
+  });
+});
+
+// -------------------- Recommend --------------------
+app.post("/recommend", (req, res) => {
+  // Input keys expected:
+  // sukupuoli, jalanMalli, nilkka, kiinnitys, kaytto, kenkatyyppi, huomioitavaa (array)
+  const input = {
+    sukupuoli: n(req.body?.sukupuoli),
+    jalanMalli: n(req.body?.jalanMalli),
+    nilkka: n(req.body?.nilkka),
+    kiinnitys: n(req.body?.kiinnitys),
+    kaytto: n(req.body?.kaytto),
+    kenkatyyppi: n(req.body?.kenkatyyppi),
+    huomioitavaa: Array.isArray(req.body?.huomioitavaa) ? req.body.huomioitavaa.map(n) : []
+  };
+
+  const profileTags = buildProfileTags(input);
+
+  // ---------- Hard gates ----------
+  let candidates = [...mallit];
+  const all = candidates.length;
+
+  // Sukupuoli on aina pakollinen teillä (Mies/Nainen)
+  candidates = candidates.filter(r => n(r["Sukupuolilinja"]) === input.sukupuoli);
+  const afterGender = candidates.length;
+
+  // Kiinnitys: jos vaadittu, rajaa
+  candidates = candidates.filter(r => kiinnitysHardAllowed(input.kiinnitys, r["Kiinnitys"]));
+  const afterKiinnitys = candidates.length;
+
+  // Kenkätyyppi: jos vaadittu, rajaa
+  candidates = candidates.filter(r => kenkaTyyppiHardAllowed(input.kenkatyyppi, r["Kenkätyyppi"]));
+  const afterKenkTyyppi = candidates.length;
+
+  // Lesti hard gate jalan mallin mukaan
+  candidates = candidates.filter(r => lestiAllowed(input.jalanMalli, r["Lesti"]));
+  const afterLesti = candidates.length;
+
+  // Turvonnut: sisäkäyttö gate (jos asiakas on turvonnut + hakee sisäkäyttöä)
+  const isSwollen = n(input.jalanMalli) === "Turvonnut";
+  if (isSwollen && n(input.kaytto) === "Sisäkäyttö") {
+    candidates = candidates.filter(r => n(r["Käyttöluokka"]) === "Sisäkäyttö" || n(r["Käyttöluokka"]) === "Työ/Sisäkäyttö");
+  }
+  const afterSwollenGate = candidates.length;
+
+  // Jos hard gate tappoi kaiken, palataan "lähimmät osumat" (eli alkuperäisestä mallilistasta sukupuolen jälkeen)
+  // jotta UI voi silti näyttää jotain + suosittaa yhteydenottoa.
+  let hardGateFailed = false;
+  let poolForFallback = candidates;
+
+  if (poolForFallback.length === 0) {
+    hardGateFailed = true;
+    // fallback: sukupuolen jälkeen (ja mielellään myös kiinnitys/kenkätyyppi toiveena pisteissä, ei karsintana)
+    poolForFallback = mallit.filter(r => n(r["Sukupuolilinja"]) === input.sukupuoli);
+  }
+
+  // ---------- Scoring ----------
+  const scored = poolForFallback.map((r) => {
+    const vaim = asNum(r["Vaimennus 1-3"], 0);
+    const rull = asNum(r["Rullaus 1-3"], 0);
+    const kj = asNum(r["Kiertojäykkyys 1-3"], 0);
+
+    // Base score: vaimennus & rullaus tärkeämmät, kiertojäykkyys vähän vähemmän
+    let score = vaim * 3 + rull * 3 + kj * 2;
+
+    // Soft bonus: käyttö, kiinnitys, kenkätyyppi
+    score += kayttoMatchScore(input.kaytto, r["Käyttöluokka"]) * 2;
+    score += kiinnitysMatchScore(input.kiinnitys, r["Kiinnitys"]) * 2;
+    score += kenkaTyyppiMatchScore(input.kenkatyyppi, r["Kenkätyyppi"]) * 2;
+
+    // Pronaatio: bonus jos kiertojäykkyys 3 (tukeva)
+    if (isPronation(input) && kj === 3) score += 2;
+
+    // Kokemuskerroin (tag-match)
+    const exp = experienceScoreForSku(r["SKU"], profileTags);
+    score += exp.score * 3;
+
+    return {
+      score,
+      expNotes: exp.notes,
+      SKU: n(r["SKU"]),
+      Malli: n(r["Malli"]),
+      Brändi: n(r["Brändi"]),
+      Sukupuolilinja: n(r["Sukupuolilinja"]),
+      Lesti: n(r["Lesti"]),
+      Kärkitila: n(r["Kärkitila"]),
+      "Päällisen joustavuus": n(r["Päällisen joustavuus"]),
+      "Jalkapöydän tila": n(r["Jalkapöydän tila"]),
+      Sisäpohja: n(r["Sisäpohja"]),
+      "Pohjan leveys": n(r["Pohjan leveys"]),
+      Kiinnitys: n(r["Kiinnitys"]),
+      Kenkätyyppi: n(r["Kenkätyyppi"]),
+      Käyttöluokka: n(r["Käyttöluokka"]),
+      Vaimennus: vaim,
+      Rullaus: rull,
+      Kiertojäykkyys: kj
+    };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // "Primary" = 1–2 selkeää (ei samanarvoisina)
+  const primary = scored.slice(0, 2);
+  // "Top" = laajempi lista
+  const top = scored.slice(0, 10);
+
+  const message = hardGateFailed
+    ? "Ei löytynyt täysin ehtojen mukaisia kenkiä (hard gate). Näytetään lähimmät osumat. Suositus: ota yhteyttä, niin varmistetaan istuvuus."
+    : "Top recommendations returned.";
+
+  res.json({
+    status: "OK",
+    input,
+    profileTags,
+    counts: {
+      all,
+      afterGender,
+      afterKiinnitys,
+      afterKenkTyyppi,
+      afterLesti,
+      afterSwollenGate
+    },
+    primary,
+    top,
+    contactSuggestion: hardGateFailed
+  });
+});
+
+// -------------------- Start --------------------
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`FitEngine Core running on http://localhost:${PORT}`);
+});

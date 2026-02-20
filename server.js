@@ -238,7 +238,8 @@ app.get("/health", (req, res) => {
 
 // -------------------- Recommend --------------------
 app.post("/recommend", (req, res) => {
-  // Input keys expected:
+
+ // Input keys expected:
   // sukupuoli, jalanMalli, nilkka, kiinnitys, kaytto, kenkatyyppi, huomioitavaa (array)
   const input = {
     sukupuoli: n(req.body?.sukupuoli),
@@ -250,7 +251,12 @@ app.post("/recommend", (req, res) => {
     huomioitavaa: Array.isArray(req.body?.huomioitavaa) ? req.body.huomioitavaa.map(n) : [],
   };
 
-  const profileTags = buildProfileTags(input);
+
+const profileTags = buildProfileTags(input);
+
+console.log("INPUT:", req.body);
+console.log("PROFILE TAGS:", profileTags);
+console.log("TEST TOE VALUE:", mallit[0]?.["Kärkitila"]);
 
   // ---------- Hard gates ----------
   let candidates = [...mallit];
@@ -274,8 +280,17 @@ app.post("/recommend", (req, res) => {
 
 // Toe box hard gate (jos leveä varvastila vaadittu)
 candidates = candidates.filter((r) =>
-  toeBoxHardAllowed(r["Kärkitila"], profileTags)
-);
+  function toeBoxHardAllowed(karkitila, profileTags = []) {
+  if (!wantsWideToeBox(profileTags)) return true;
+
+  const k = n(karkitila).toLowerCase();
+
+  // Jos arvo puuttuu -> EI sallita
+  if (!k) return false;
+
+  // Vain anatominen hyväksytään
+  return k.includes("anatom");
+}
 
   // Turvonnut: sisäkäyttö gate (jos asiakas on turvonnut + hakee sisäkäyttöä)
   const isSwollen = n(input.jalanMalli) === "Turvonnut";

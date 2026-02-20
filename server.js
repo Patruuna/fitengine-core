@@ -62,7 +62,7 @@ function asNum(x, fallback = 0) {
 // Kokemus: CSV oletus sarakkeet: SKU, ProfiiliTagi, Kokemuskerroin (0-2), Huomio
 function experienceScoreForSku(sku, profileTags = []) {
   const s = n(sku);
-  const rows = kokemus.filter(r => n(r["SKU"]) === s);
+  const rows = kokemus.filter((r) => n(r["SKU"]) === s);
   if (!rows.length) return { score: 0, notes: [] };
 
   let best = 0;
@@ -131,7 +131,7 @@ function lestiAllowed(jalanMalli, lesti) {
 
   if (jm === "kapea") return le === "kapea";
   if (jm === "normaali") return le === "normaali";
-  if (jm === "leveä" || jm === "levez" || jm === "levea") return le === "leveä" || le === "levea";
+  if (jm === "leveä" || jm === "levea") return le === "leveä" || le === "levea";
 
   // Turvonnut / paksu -> yleensä K-lesti
   return le === "k-lesti";
@@ -209,7 +209,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     message: "FitEngine Core is running",
-    loaded: { mallit: mallit.length, kokemus: kokemus.length }
+    loaded: { mallit: mallit.length, kokemus: kokemus.length },
   });
 });
 
@@ -224,7 +224,7 @@ app.post("/recommend", (req, res) => {
     kiinnitys: n(req.body?.kiinnitys),
     kaytto: n(req.body?.kaytto),
     kenkatyyppi: n(req.body?.kenkatyyppi),
-    huomioitavaa: Array.isArray(req.body?.huomioitavaa) ? req.body.huomioitavaa.map(n) : []
+    huomioitavaa: Array.isArray(req.body?.huomioitavaa) ? req.body.huomioitavaa.map(n) : [],
   };
 
   const profileTags = buildProfileTags(input);
@@ -234,25 +234,27 @@ app.post("/recommend", (req, res) => {
   const all = candidates.length;
 
   // Sukupuoli on aina pakollinen teillä (Mies/Nainen)
-  candidates = candidates.filter(r => n(r["Sukupuolilinja"]) === input.sukupuoli);
+  candidates = candidates.filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli);
   const afterGender = candidates.length;
 
   // Kiinnitys: jos vaadittu, rajaa
-  candidates = candidates.filter(r => kiinnitysHardAllowed(input.kiinnitys, r["Kiinnitys"]));
+  candidates = candidates.filter((r) => kiinnitysHardAllowed(input.kiinnitys, r["Kiinnitys"]));
   const afterKiinnitys = candidates.length;
 
   // Kenkätyyppi: jos vaadittu, rajaa
-  candidates = candidates.filter(r => kenkaTyyppiHardAllowed(input.kenkatyyppi, r["Kenkätyyppi"]));
+  candidates = candidates.filter((r) => kenkaTyyppiHardAllowed(input.kenkatyyppi, r["Kenkätyyppi"]));
   const afterKenkTyyppi = candidates.length;
 
   // Lesti hard gate jalan mallin mukaan
-  candidates = candidates.filter(r => lestiAllowed(input.jalanMalli, r["Lesti"]));
+  candidates = candidates.filter((r) => lestiAllowed(input.jalanMalli, r["Lesti"]));
   const afterLesti = candidates.length;
 
   // Turvonnut: sisäkäyttö gate (jos asiakas on turvonnut + hakee sisäkäyttöä)
   const isSwollen = n(input.jalanMalli) === "Turvonnut";
   if (isSwollen && n(input.kaytto) === "Sisäkäyttö") {
-    candidates = candidates.filter(r => n(r["Käyttöluokka"]) === "Sisäkäyttö" || n(r["Käyttöluokka"]) === "Työ/Sisäkäyttö");
+    candidates = candidates.filter(
+      (r) => n(r["Käyttöluokka"]) === "Sisäkäyttö" || n(r["Käyttöluokka"]) === "Työ/Sisäkäyttö"
+    );
   }
   const afterSwollenGate = candidates.length;
 
@@ -264,7 +266,7 @@ app.post("/recommend", (req, res) => {
   if (poolForFallback.length === 0) {
     hardGateFailed = true;
     // fallback: sukupuolen jälkeen (ja mielellään myös kiinnitys/kenkätyyppi toiveena pisteissä, ei karsintana)
-    poolForFallback = mallit.filter(r => n(r["Sukupuolilinja"]) === input.sukupuoli);
+    poolForFallback = mallit.filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli);
   }
 
   // ---------- Scoring ----------
@@ -306,13 +308,13 @@ app.post("/recommend", (req, res) => {
       Käyttöluokka: n(r["Käyttöluokka"]),
       Vaimennus: vaim,
       Rullaus: rull,
-      Kiertojäykkyys: kj
+      Kiertojäykkyys: kj,
     };
   });
 
   scored.sort((a, b) => b.score - a.score);
 
-  // --- Dedupe by SKU (prevents duplicates in UI) ---
+  // --- Dedupe by SKU (prevents duplicates) ---
   const seen = new Set();
   const unique = [];
   for (const item of scored) {
@@ -325,10 +327,10 @@ app.post("/recommend", (req, res) => {
 
   // --- Limits (keep UI clean) ---
   const PRIMARY_COUNT = 2;
-  const TOP_COUNT = 8; // vaihda 5/8/10 miten haluat
+  const TOP_COUNT = 8; // "lisäsuositukset" määränä, ei sisällä primarya
 
   const primary = unique.slice(0, PRIMARY_COUNT);
-  const top = unique.slice(0, TOP_COUNT);
+  const top = unique.slice(PRIMARY_COUNT, PRIMARY_COUNT + TOP_COUNT); // <-- EI DUPLIKAA primarya
 
   const message = hardGateFailed
     ? "Ei löytynyt täysin ehtojen mukaisia kenkiä. Näytetään lähimmät osumat. Suositus: ota yhteyttä, niin varmistetaan istuvuus."
@@ -344,16 +346,14 @@ app.post("/recommend", (req, res) => {
       afterKiinnitys,
       afterKenkTyyppi,
       afterLesti,
-      afterSwollenGate
+      afterSwollenGate,
     },
     primary,
     top,
     contactSuggestion: hardGateFailed,
-    message
+    message,
   });
 });
-
-
 
 // -------------------- Start --------------------
 const PORT = process.env.PORT || 3001;

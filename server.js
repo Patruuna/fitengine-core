@@ -309,11 +309,34 @@ app.post("/recommend", (req, res) => {
     // Pronaatio: bonus jos kiertojäykkyys 3 (tukeva)
     if (isPronation(input) && kj === 3) score += 2;
 
-score += toeBoxScore(r["Kärkitila"], profileTags);
+function toeBoxScore(karkitila, profileTags = []) {
+  if (!wantsWideToeBox(profileTags)) return 0;
+
+  const k = n(karkitila).toLowerCase();
+
+  // teidän data-arvot:
+  // siro = kapea/ahdas kärki -> iso miinus jos tarvitaan tilaa
+  // normaali = ok
+  // anatominen = tilava/foot-shaped -> iso plussa
+
+  if (k.includes("anatom")) return 8;
+  if (k.includes("norm")) return 2;
+  if (k.includes("siro")) return -50;   // tyrmäys: ei saa nousta primaryyn
+
+  // jos arvo puuttuu tai on joku outo:
+  return -3;
+}
 
     // Kokemuskerroin (tag-match)
     const exp = experienceScoreForSku(r["SKU"], profileTags);
     score += exp.score * 3;
+
+const reasons = [];
+
+const toeBonus = toeBoxScore(r["Kärkitila"], profileTags);
+score += toeBonus;
+if (toeBonus <= -20) reasons.push("Kärki on siro, mutta valitsit leveän varvastilan tarpeen.");
+if (toeBonus >= 6) reasons.push("Anatominen kärki tukee leveää varvastilaa.");
 
     return {
       score,

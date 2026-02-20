@@ -291,11 +291,13 @@ candidates = candidates.filter((r) =>
   let hardGateFailed = false;
   let poolForFallback = candidates;
 
-  if (poolForFallback.length === 0) {
-    hardGateFailed = true;
-    // fallback: sukupuolen jälkeen (ja mielellään myös kiinnitys/kenkätyyppi toiveena pisteissä, ei karsintana)
-    poolForFallback = mallit.filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli);
-  }
+if (poolForFallback.length === 0) {
+  hardGateFailed = true;
+
+  poolForFallback = mallit
+    .filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli)
+    .filter((r) => toeBoxHardAllowed(r["Kärkitila"], profileTags)); // <- sama sääntö myös fallbackiin
+}
 
   // ---------- Scoring ----------
   const scored = poolForFallback.map((r) => {
@@ -319,11 +321,9 @@ function toeBoxHardAllowed(karkitila, profileTags = []) {
 
   const k = n(karkitila).toLowerCase();
 
-  // Jos asiakas tarvitsee leveää varvastilaa,
-  // siro EI ole sallittu.
-  if (k.includes("siro")) return false;
-
-  return true;
+  // Kun tarvitaan leveää varvastilaa:
+  // hyväksy VAIN anatominen kärki
+  return k.includes("anatom");
 }
 
 function toeBoxScore(karkitila, profileTags = []) {

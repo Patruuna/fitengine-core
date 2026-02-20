@@ -351,6 +351,8 @@ app.post("/recommend", (req, res) => {
     contactSuggestion: hardGateFailed,
     message
   });
+});
+
 
 
 // -------------------- Start --------------------

@@ -204,6 +204,29 @@ function isPronation(input) {
   return n(input.nilkka) === "Pronaatio";
 }
 
+function wantsWideToeBox(profileTags = []) {
+  return (
+    profileTags.includes("VARVASTILA_LEVEA") ||
+    profileTags.includes("VASARAVARPAAT") ||
+    profileTags.includes("VAIVAISENLUU_HIERTYMA")
+  );
+}
+
+// Kärkitila score: palkitse tilava, rankaise kapea
+function toeBoxScore(karkitila, profileTags = []) {
+  if (!wantsWideToeBox(profileTags)) return 0;
+
+  const k = n(karkitila).toLowerCase();
+
+  // säädä näitä sanoja vastaamaan teidän dataa (leveä/tilava/normaali/kapea)
+  if (k.includes("leve") || k.includes("tila") || k.includes("reilu")) return 4;
+  if (k.includes("norm")) return 1;
+  if (k.includes("kape")) return -8;
+
+  // jos arvo puuttuu/epäselvä -> pieni miinus (ettei huonosti merkityt voita)
+  return -1;
+}
+
 // -------------------- Health --------------------
 app.get("/health", (req, res) => {
   res.json({
@@ -285,6 +308,8 @@ app.post("/recommend", (req, res) => {
 
     // Pronaatio: bonus jos kiertojäykkyys 3 (tukeva)
     if (isPronation(input) && kj === 3) score += 2;
+
+score += toeBoxScore(r["Kärkitila"], profileTags);
 
     // Kokemuskerroin (tag-match)
     const exp = experienceScoreForSku(r["SKU"], profileTags);

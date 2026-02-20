@@ -272,6 +272,11 @@ app.post("/recommend", (req, res) => {
   candidates = candidates.filter((r) => lestiAllowed(input.jalanMalli, r["Lesti"]));
   const afterLesti = candidates.length;
 
+// Toe box hard gate (jos leveä varvastila vaadittu)
+candidates = candidates.filter((r) =>
+  toeBoxHardAllowed(r["Kärkitila"], profileTags)
+);
+
   // Turvonnut: sisäkäyttö gate (jos asiakas on turvonnut + hakee sisäkäyttöä)
   const isSwollen = n(input.jalanMalli) === "Turvonnut";
   if (isSwollen && n(input.kaytto) === "Sisäkäyttö") {
@@ -308,6 +313,18 @@ app.post("/recommend", (req, res) => {
 
     // Pronaatio: bonus jos kiertojäykkyys 3 (tukeva)
     if (isPronation(input) && kj === 3) score += 2;
+
+function toeBoxHardAllowed(karkitila, profileTags = []) {
+  if (!wantsWideToeBox(profileTags)) return true;
+
+  const k = n(karkitila).toLowerCase();
+
+  // Jos asiakas tarvitsee leveää varvastilaa,
+  // siro EI ole sallittu.
+  if (k.includes("siro")) return false;
+
+  return true;
+}
 
 function toeBoxScore(karkitila, profileTags = []) {
   if (!wantsWideToeBox(profileTags)) return 0;

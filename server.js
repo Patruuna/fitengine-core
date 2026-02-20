@@ -312,32 +312,26 @@ app.post("/recommend", (req, res) => {
 
   scored.sort((a, b) => b.score - a.score);
 
-  // "Primary" = 1–2 selkeää (ei samanarvoisina)
-  const primary = scored.slice(0, 2);
-  // "Top" = laajempi lista
-  const top = scored.slice(0, 10);
-
-  // --- Message: explain why hard gate failed (and be explicit for Sandaali + Nauha) ---
-  let reason = "";
-  if (hardGateFailed) {
-    const hasType = input.kenkatyyppi && !isNoPreference(input.kenkatyyppi);
-    const hasFix = input.kiinnitys && !isNoPreference(input.kiinnitys);
-
-    if (hasType && hasFix && n(input.kenkatyyppi) === "Sandaali" && n(input.kiinnitys) === "Nauha") {
-      reason = "Meillä ei tällä hetkellä ole sandaaleja nauhakiinnityksellä.";
-    } else if (hasType && hasFix) {
-      reason = `Valitulla yhdistelmällä ei löytynyt osumia (${input.kenkatyyppi} + ${input.kiinnitys}).`;
-    } else if (hasType) {
-      reason = `Valitulla kenkätyypillä ei löytynyt osumia (${input.kenkatyyppi}).`;
-    } else if (hasFix) {
-      reason = `Valitulla kiinnityksellä ei löytynyt osumia (${input.kiinnitys}).`;
-    } else {
-      reason = "Valinnoilla ei löytynyt osumia.";
-    }
+  // --- Dedupe by SKU (prevents duplicates in UI) ---
+  const seen = new Set();
+  const unique = [];
+  for (const item of scored) {
+    const sku = n(item.SKU);
+    if (!sku) continue;
+    if (seen.has(sku)) continue;
+    seen.add(sku);
+    unique.push(item);
   }
 
+  // --- Limits (keep UI clean) ---
+  const PRIMARY_COUNT = 2;
+  const TOP_COUNT = 8; // vaihda 5/8/10 miten haluat
+
+  const primary = unique.slice(0, PRIMARY_COUNT);
+  const top = unique.slice(0, TOP_COUNT);
+
   const message = hardGateFailed
-    ? `${reason} Näytetään lähimmät osumat. Suositus: ota yhteyttä, niin varmistetaan istuvuus.`
+    ? "Ei löytynyt täysin ehtojen mukaisia kenkiä. Näytetään lähimmät osumat. Suositus: ota yhteyttä, niin varmistetaan istuvuus."
     : "Top recommendations returned.";
 
   res.json({
@@ -357,7 +351,7 @@ app.post("/recommend", (req, res) => {
     contactSuggestion: hardGateFailed,
     message
   });
-});
+
 
 // -------------------- Start --------------------
 const PORT = process.env.PORT || 3001;

@@ -15,8 +15,7 @@ app.use(express.json({ limit: "1mb" }));
 // -------------------- CSV load --------------------
 function readCsv(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
-  // mallit.csv tulee usein ; eroteltuna (Excel FI). csv-parse osaa päätellä delimiterin huonosti,
-  // joten asetetaan ; ja fallback , jos tarvitaan.
+  // mallit.csv tulee usein ; eroteltuna (Excel FI).
   try {
     return parse(raw, { columns: true, skip_empty_lines: true, delimiter: ";" });
   } catch (e) {
@@ -49,11 +48,6 @@ function n(x) {
   return String(x).trim();
 }
 
-function isNoPreference(v) {
-  const w = n(v).toLowerCase();
-  return w === "" || w === "ei väliä" || w === "ei mitää" || w === "ei mitään";
-}
-
 function asNum(x, fallback = 0) {
   const v = Number(String(x).replace(",", "."));
   return Number.isFinite(v) ? v : fallback;
@@ -73,8 +67,6 @@ function experienceScoreForSku(sku, profileTags = []) {
     const k = asNum(r["Kokemuskerroin (0-2)"], 0);
     const note = n(r["Huomio"]);
 
-    // Jos kokemusrivi liittyy profiiliin (tag match), annetaan paino
-    // Jos tag on tyhjä, se on geneerinen kokemus.
     const tagMatch = !tag || profileTags.includes(tag);
     if (tagMatch) {
       best = Math.max(best, k);
@@ -87,6 +79,7 @@ function experienceScoreForSku(sku, profileTags = []) {
 // Profiilitagit asiakkaasta (hyödyttää kokemus.csv matchia)
 function buildProfileTags(input) {
   const tags = [];
+
   const suk = n(input.sukupuoli).toUpperCase();
   if (suk === "MIES") tags.push("SUKUPUOLI_MIES");
   if (suk === "NAINEN") tags.push("SUKUPUOLI_NAINEN");
@@ -95,7 +88,7 @@ function buildProfileTags(input) {
   if (jm === "KAPEA") tags.push("JALKA_KAPEA");
   if (jm === "NORMAALI") tags.push("JALKA_NORMAALI");
   if (jm === "LEVEÄ" || jm === "LEVEA") tags.push("JALKA_LEVEA");
-  if (jm === "TURVONNUT") tags.push("JALKA_PAKSU"); // teidän tagi-logiikka
+  if (jm === "TURVONNUT") tags.push("JALKA_PAKSU");
 
   const nil = n(input.nilkka).toUpperCase();
   if (nil === "SUORA") tags.push("NILKKA_SUORA");
@@ -108,7 +101,7 @@ function buildProfileTags(input) {
   if (kay === "SISÄKÄYTTÖ" || kay === "SISAKAYTTO") tags.push("KAYTTO_SISAKAYTTO");
   if (kay === "KEVYT/SIRO") tags.push("KAYTTO_KEVYT_SIRO");
 
-  // Huomioitavaa-lista (esim ["Vasaravarpaat","Jalkaterän kipu"])
+  // Huomioitavaa-lista (esim ["Vasaravarpaat","Päkiä tai jalkaterän kipu"])
   const h = Array.isArray(input.huomioitavaa) ? input.huomioitavaa : [];
   for (const item of h) {
     const it = n(item).toUpperCase();
@@ -144,7 +137,7 @@ function kiinnitysHardAllowed(wanted, model) {
 
   if (!w || w === "Ei väliä") return true;
 
-  if (w === "Nauha") return m === "Nauha" || m === "Nauha ja vetoketju"; // hyväksyy zip-lace
+  if (w === "Nauha") return m === "Nauha" || m === "Nauha ja vetoketju";
   if (w === "Tarra") return m === "Tarra";
   if (w === "Nauha ja vetoketju") return m === "Nauha ja vetoketju";
   if (w === "Ei mitään") return m === "Ei mitään";
@@ -152,13 +145,12 @@ function kiinnitysHardAllowed(wanted, model) {
   return true;
 }
 
-// Kenkätyyppi: hard gate - jos asiakas vaatii
+// Kenkätyyppi: hard gate
 function kenkaTyyppiHardAllowed(wanted, model) {
   const w = n(wanted);
   const m = n(model);
 
   if (!w || w === "Ei väliä") return true;
-  // Tässä pidetään yksinkertaisena: vaatii samaa tyyppiä
   return w === m;
 }
 
@@ -169,10 +161,7 @@ function kayttoMatchScore(wanted, model) {
   if (!w || w === "Ei väliä") return 0;
   if (w === m) return 2;
 
-  // Päivittäinen ja Kevyt/siro ovat lähekkäin, mutta ei sama
   if ((w === "Päivittäinen" && m === "Kevyt/siro") || (w === "Kevyt/siro" && m === "Päivittäinen")) return 1;
-
-  // Työ/Sisäkäyttö lähellä sisäkäyttöä
   if ((w === "Sisäkäyttö" && m === "Työ/Sisäkäyttö") || (w === "Työ/Sisäkäyttö" && m === "Sisäkäyttö")) return 1;
 
   return 0;
@@ -185,9 +174,7 @@ function kiinnitysMatchScore(wanted, model) {
   if (!w || w === "Ei väliä") return 0;
   if (w === m) return 2;
 
-  // "Nauha" hyväksyy myös "Nauha ja vetoketju" (toive-tasolla)
   if (w === "Nauha" && m === "Nauha ja vetoketju") return 1;
-
   return 0;
 }
 
@@ -212,19 +199,23 @@ function wantsWideToeBox(profileTags = []) {
   );
 }
 
-// Kärkitila score: palkitse tilava, rankaise kapea
+// HARD GATE: jos tarvitaan leveää varvastilaa -> VAIN anatominen kelpaa (myös fallbackissa)
+function toeBoxHardAllowed(karkitila, profileTags = []) {
+  if (!wantsWideToeBox(profileTags)) return true;
+  const k = n(karkitila).toLowerCase();
+  if (!k) return false;
+  return k.includes("anatom");
+}
+
+// (Optional) Scoring bonus toe box - teidän arvoilla
 function toeBoxScore(karkitila, profileTags = []) {
   if (!wantsWideToeBox(profileTags)) return 0;
 
   const k = n(karkitila).toLowerCase();
-
-  // säädä näitä sanoja vastaamaan teidän dataa (leveä/tilava/normaali/kapea)
-  if (k.includes("leve") || k.includes("tila") || k.includes("reilu")) return 4;
-  if (k.includes("norm")) return 1;
-  if (k.includes("kape")) return -8;
-
-  // jos arvo puuttuu/epäselvä -> pieni miinus (ettei huonosti merkityt voita)
-  return -1;
+  if (k.includes("anatom")) return 6;
+  if (k.includes("norm")) return 0;
+  if (k.includes("siro")) return -10;
+  return -2;
 }
 
 // -------------------- Health --------------------
@@ -238,9 +229,6 @@ app.get("/health", (req, res) => {
 
 // -------------------- Recommend --------------------
 app.post("/recommend", (req, res) => {
-
- // Input keys expected:
-  // sukupuoli, jalanMalli, nilkka, kiinnitys, kaytto, kenkatyyppi, huomioitavaa (array)
   const input = {
     sukupuoli: n(req.body?.sukupuoli),
     jalanMalli: n(req.body?.jalanMalli),
@@ -251,48 +239,38 @@ app.post("/recommend", (req, res) => {
     huomioitavaa: Array.isArray(req.body?.huomioitavaa) ? req.body.huomioitavaa.map(n) : [],
   };
 
+  const profileTags = buildProfileTags(input);
 
-const profileTags = buildProfileTags(input);
-
-console.log("INPUT:", req.body);
-console.log("PROFILE TAGS:", profileTags);
-console.log("TEST TOE VALUE:", mallit[0]?.["Kärkitila"]);
+  // Debug (voit poistaa myöhemmin)
+  console.log("INPUT:", req.body);
+  console.log("PROFILE TAGS:", profileTags);
+  console.log("TEST TOE VALUE:", mallit[0]?.["Kärkitila"]);
 
   // ---------- Hard gates ----------
   let candidates = [...mallit];
   const all = candidates.length;
 
-  // Sukupuoli on aina pakollinen teillä (Mies/Nainen)
+  // Sukupuoli gate
   candidates = candidates.filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli);
   const afterGender = candidates.length;
 
-  // Kiinnitys: jos vaadittu, rajaa
+  // Kiinnitys gate
   candidates = candidates.filter((r) => kiinnitysHardAllowed(input.kiinnitys, r["Kiinnitys"]));
   const afterKiinnitys = candidates.length;
 
-  // Kenkätyyppi: jos vaadittu, rajaa
+  // Kenkätyyppi gate
   candidates = candidates.filter((r) => kenkaTyyppiHardAllowed(input.kenkatyyppi, r["Kenkätyyppi"]));
   const afterKenkTyyppi = candidates.length;
 
-  // Lesti hard gate jalan mallin mukaan
+  // Lesti gate
   candidates = candidates.filter((r) => lestiAllowed(input.jalanMalli, r["Lesti"]));
   const afterLesti = candidates.length;
 
-// Toe box hard gate (jos leveä varvastila vaadittu)
-candidates = candidates.filter((r) =>
-  function toeBoxHardAllowed(karkitila, profileTags = []) {
-  if (!wantsWideToeBox(profileTags)) return true;
+  // Toe box gate (anatominen only, jos tarvitaan varvastilaa)
+  candidates = candidates.filter((r) => toeBoxHardAllowed(r["Kärkitila"], profileTags));
+  const afterToeBoxGate = candidates.length;
 
-  const k = n(karkitila).toLowerCase();
-
-  // Jos arvo puuttuu -> EI sallita
-  if (!k) return false;
-
-  // Vain anatominen hyväksytään
-  return k.includes("anatom");
-}
-
-  // Turvonnut: sisäkäyttö gate (jos asiakas on turvonnut + hakee sisäkäyttöä)
+  // Turvonnut + sisäkäyttö gate
   const isSwollen = n(input.jalanMalli) === "Turvonnut";
   if (isSwollen && n(input.kaytto) === "Sisäkäyttö") {
     candidates = candidates.filter(
@@ -301,18 +279,18 @@ candidates = candidates.filter((r) =>
   }
   const afterSwollenGate = candidates.length;
 
-  // Jos hard gate tappoi kaiken, palataan "lähimmät osumat" (eli alkuperäisestä mallilistasta sukupuolen jälkeen)
-  // jotta UI voi silti näyttää jotain + suosittaa yhteydenottoa.
+  // fallback pool
   let hardGateFailed = false;
   let poolForFallback = candidates;
 
-if (poolForFallback.length === 0) {
-  hardGateFailed = true;
+  if (poolForFallback.length === 0) {
+    hardGateFailed = true;
 
-  poolForFallback = mallit
-    .filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli)
-    .filter((r) => toeBoxHardAllowed(r["Kärkitila"], profileTags)); // <- sama sääntö myös fallbackiin
-}
+    // fallback: sukupuolen jälkeen, mutta pidetään toe box gate myös fallbackissa (valinta "1")
+    poolForFallback = mallit
+      .filter((r) => n(r["Sukupuolilinja"]) === input.sukupuoli)
+      .filter((r) => toeBoxHardAllowed(r["Kärkitila"], profileTags));
+  }
 
   // ---------- Scoring ----------
   const scored = poolForFallback.map((r) => {
@@ -320,58 +298,31 @@ if (poolForFallback.length === 0) {
     const rull = asNum(r["Rullaus 1-3"], 0);
     const kj = asNum(r["Kiertojäykkyys 1-3"], 0);
 
-    // Base score: vaimennus & rullaus tärkeämmät, kiertojäykkyys vähän vähemmän
     let score = vaim * 3 + rull * 3 + kj * 2;
 
-    // Soft bonus: käyttö, kiinnitys, kenkätyyppi
     score += kayttoMatchScore(input.kaytto, r["Käyttöluokka"]) * 2;
     score += kiinnitysMatchScore(input.kiinnitys, r["Kiinnitys"]) * 2;
     score += kenkaTyyppiMatchScore(input.kenkatyyppi, r["Kenkätyyppi"]) * 2;
 
-    // Pronaatio: bonus jos kiertojäykkyys 3 (tukeva)
     if (isPronation(input) && kj === 3) score += 2;
 
-function toeBoxHardAllowed(karkitila, profileTags = []) {
-  if (!wantsWideToeBox(profileTags)) return true;
+    // Toe box scoring (kevyenä, koska hard gate hoitaa tärkeimmän)
+    const toeBonus = toeBoxScore(r["Kärkitila"], profileTags);
+    score += toeBonus;
 
-  const k = n(karkitila).toLowerCase();
-
-  // Kun tarvitaan leveää varvastilaa:
-  // hyväksy VAIN anatominen kärki
-  return k.includes("anatom");
-}
-
-function toeBoxScore(karkitila, profileTags = []) {
-  if (!wantsWideToeBox(profileTags)) return 0;
-
-  const k = n(karkitila).toLowerCase();
-
-  // teidän data-arvot:
-  // siro = kapea/ahdas kärki -> iso miinus jos tarvitaan tilaa
-  // normaali = ok
-  // anatominen = tilava/foot-shaped -> iso plussa
-
-  if (k.includes("anatom")) return 8;
-  if (k.includes("norm")) return 2;
-  if (k.includes("siro")) return -50;   // tyrmäys: ei saa nousta primaryyn
-
-  // jos arvo puuttuu tai on joku outo:
-  return -3;
-}
-
-    // Kokemuskerroin (tag-match)
     const exp = experienceScoreForSku(r["SKU"], profileTags);
     score += exp.score * 3;
 
-const reasons = [];
-
-const toeBonus = toeBoxScore(r["Kärkitila"], profileTags);
-score += toeBonus;
-if (toeBonus <= -20) reasons.push("Kärki on siro, mutta valitsit leveän varvastilan tarpeen.");
-if (toeBonus >= 6) reasons.push("Anatominen kärki tukee leveää varvastilaa.");
+    const reasons = [];
+    if (wantsWideToeBox(profileTags)) {
+      const k = n(r["Kärkitila"]).toLowerCase();
+      if (k.includes("anatom")) reasons.push("Anatominen kärki tukee leveää varvastilaa.");
+    }
+    if (exp.notes?.length) reasons.push(...exp.notes);
 
     return {
       score,
+      reasons,
       expNotes: exp.notes,
       SKU: n(r["SKU"]),
       Malli: n(r["Malli"]),
@@ -394,7 +345,7 @@ if (toeBonus >= 6) reasons.push("Anatominen kärki tukee leveää varvastilaa.")
 
   scored.sort((a, b) => b.score - a.score);
 
-  // --- Dedupe by SKU (prevents duplicates) ---
+  // --- Dedupe by SKU ---
   const seen = new Set();
   const unique = [];
   for (const item of scored) {
@@ -405,12 +356,12 @@ if (toeBonus >= 6) reasons.push("Anatominen kärki tukee leveää varvastilaa.")
     unique.push(item);
   }
 
-  // --- Limits (keep UI clean) ---
+  // --- Limits ---
   const PRIMARY_COUNT = 2;
-  const TOP_COUNT = 8; // "lisäsuositukset" määränä, ei sisällä primarya
+  const TOP_COUNT = 8;
 
   const primary = unique.slice(0, PRIMARY_COUNT);
-  const top = unique.slice(PRIMARY_COUNT, PRIMARY_COUNT + TOP_COUNT); // <-- EI DUPLIKAA primarya
+  const top = unique.slice(PRIMARY_COUNT, PRIMARY_COUNT + TOP_COUNT);
 
   const message = hardGateFailed
     ? "Ei löytynyt täysin ehtojen mukaisia kenkiä. Näytetään lähimmät osumat. Suositus: ota yhteyttä, niin varmistetaan istuvuus."
@@ -426,6 +377,7 @@ if (toeBonus >= 6) reasons.push("Anatominen kärki tukee leveää varvastilaa.")
       afterKiinnitys,
       afterKenkTyyppi,
       afterLesti,
+      afterToeBoxGate,
       afterSwollenGate,
     },
     primary,
